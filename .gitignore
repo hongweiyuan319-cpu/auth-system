@@ -6,7 +6,7 @@ __pycache__/
 *.pyc
 
 # 数据库文件（运行时数据，不该提交）
-database.db
+*.db
 
 # 虚拟环境
 .venv/
@@ -14,3 +14,10 @@ venv/
 
 # 日志
 *.log
+
+# pytest 缓存
+.pytest_cache/
+
+# 生成的测试脚本与报告
+generated/
+report.md
