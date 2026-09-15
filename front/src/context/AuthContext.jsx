@@ -9,7 +9,8 @@
 */
 
 //1. createContext() ：造一个共享容器，**建公告栏**
-import { createContext, useState, useContext } from 'react';
+import { createContext, useState, useContext, useEffect, useCallback } from 'react';
+import { getProfile } from '../api/auth';   // 用于在刷新页面时验证本地 token 是否还有效
 const AuthContext = createContext(null);   // 造一个空盒子，默认空（null）
 //createContext(null) = 引入后，造一个空的共享盒子，null 是它的默认空内容。盒子本身不干活，等 Provider 放数据、useContext 取数据
 
@@ -21,15 +22,33 @@ export function AuthProvider({ children }){
     );
 
 //3. 登录方法
-    const login = (token) => {
+    // useCallback：让函数在多次渲染之间保持同一份引用，
+    // 这样下面 useEffect 的依赖项不会每次都变，避免验证请求被反复触发
+    const login = useCallback((token) => {
         localStorage.setItem('token',token); //① 抄进笔记本（刷新不丢）
         setUser(token)// ② 点亮已登录灯（页面立刻变）
-    };
+    }, []);
 
-    const logout = () => {
+    const logout = useCallback(() => {
         localStorage.removeItem('token');//① 撕掉笔记本上的 token
         setUser(null);// ② 关掉"已登录"灯 → 页面立刻变未登录
-    }
+    }, []);
+
+//4. 刷新页面时校验一次 token
+    // 光看 localStorage 里「有没有 token」是不够的：token 可能早就过期了。
+    // 所以这里拿它去后端问一次 /api/user/profile：
+    //   成功 → token 有效，保持登录态
+    //   失败 → token 过期或被伪造，logout() 清掉它，页面自动变回未登录
+    useEffect(() => {
+        const token = localStorage.getItem('token');
+        if (!token) return;                 // 本来就没登录，不用去问后端
+
+        getProfile().catch((err) => {
+            // 只有后端明确回了 401（token 无效 / 过期）才登出。
+            // 如果是网络错误（比如后端没启动），不应该把用户踢下线。
+            if (err.response?.status === 401) logout();
+        });
+    }, [logout]);
 
 // Provider 组件负责把数据传递给子组件
     return(

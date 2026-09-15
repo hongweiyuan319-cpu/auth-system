@@ -34,8 +34,8 @@ function Login() {
   return (
     <div className="auth-page">
       <div className="brand">
-        <span className="brand-logo">Q</span>
-        <span className="brand-name">QA AI Agent</span>
+        <span className="brand-logo">登</span>
+        <span className="brand-name">登录系统</span>
       </div>
       <h2>登录</h2>
       <p className="subtitle">登录你的账户以继续</p>

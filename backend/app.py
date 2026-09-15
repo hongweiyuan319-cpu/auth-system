@@ -1,9 +1,11 @@
+import os
 import sqlite3 
 from flask import Flask, jsonify, request
 from flask_cors import CORS  # 允许前端跨域访问
 from werkzeug.security import check_password_hash, generate_password_hash #引入哈希
 from validate_data import validate_register_input
 from validate_data import check_username_exists
+from db import get_connection  # 统一的数据库连接（固定指向 backend/database.db）
 import jwt
 import datetime
 
@@ -15,15 +17,24 @@ CORS(app) #给刚刚创建的 app 跨域，此时这个后端变成了“允许�
 
 #2. 初始化 SQLite 数据库（自动建表）
 def init_db():
-    conn = sqlite3.connect("database.db") #创建：在SQLite中，创建数据库和连接数据库是同一个动作，当写完这个代码，python就会在app.py所在的同级目录下生成database.db的文件
+    conn = get_connection() #创建：在SQLite中，创建数据库和连接数据库是同一个动作。统一走 db.py，数据库固定在 backend/database.db
     cursor = conn.cursor()#之前的conn是连接数据库，现在的cursor是相当于申请增删改查操作权限
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users(
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            username TEXT NOT NULL,
+            username TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL
             )
         """)#创建一个叫user的表，如果表已经存在，就不要重复创建(第一列叫ID，存整数，作为唯一主键，并且自动递增；第二列叫username，存文本，不能为空；第三列叫password，存文本，不能为空)
+
+    # 给 username 补一个唯一索引：即使 users 表是之前建的（没写 UNIQUE），这句也能补上约束。
+    # 这样「同一用户名注册两次」在数据库层面就会被拦住，不再只靠 check_username_exists 的「先查后插」
+    # （先查后插在并发/双击提交时可能漏网，唯一索引才是最后一道防线）
+    try:
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+    except sqlite3.IntegrityError:
+        # 说明旧数据里已经有重复用户名了，需要先把重复数据清理掉才能加上约束
+        print("⚠️ users 表里已存在重复用户名，无法创建唯一索引，请先清理重复数据")
 
     conn.commit() #提交并保存
     conn.close() #关闭
@@ -36,11 +47,20 @@ def init_db():
 @app.route("/api/register",methods=["POST"]) #当客户端向服务器发送请求，访问/api/register路径时，会触发下面定义的函数来处理，只接受 POST 请求：
 #客户端是发起请求的一方，服务器是响应请求的一方
 def register():
-    data = request.get_json() #从request里面拿到JSON数据
-    if not data:
+    data = request.get_json(silent=True) #从request里面拿到JSON数据
+    # silent=True：请求体不是合法 JSON 时返回 None，而不是抛 415/400 的 HTML 错误页，
+    # 这样前端拿到的依然是统一的 JSON 错误提示
+    if not isinstance(data, dict):
         return jsonify({"message": "请求内容不能为空，请传入JSON数据", "code": 400}), 400
     username = data.get("username")
     password = data.get("password")
+
+    # 统一去掉首尾空格：否则 "  alice" 和 "alice" 会被当成两个不同的账号
+    # （登录接口里做了同样的处理，两边规则必须一致）
+    if isinstance(username, str):
+        username = username.strip()
+    if isinstance(password, str):
+        password = password.strip()
 
 
     error_message, status_code = validate_register_input(username, password)
@@ -53,7 +73,7 @@ def register():
 
     hashed_password = generate_password_hash(password)## 存入数据库的是 hashed_password，而不是明文 password
 
-    conn = sqlite3.connect("database.db")
+    conn = get_connection()
     cursor = conn.cursor()
 
     try:#尝试执行
@@ -62,10 +82,15 @@ def register():
             (username,hashed_password),
         )#把新用户的 username 和 password 写入数据库的 users 表中
         conn.commit()
-    except Exception as e:#捕获异常
+    except sqlite3.IntegrityError:#命中 username 的 UNIQUE 唯一约束
         return(
-            jsonify({"message": f"注册失败: {str(e)}", "code": 500}),500,
-        )#如果写入失败（比如用户名已存在、数据库报错），则捕获错误，返回 500 错误状态码和失败原因
+            jsonify({"message": "该用户名已被注册", "code": 400}),400,
+        )#并发或双击提交时「先查后插」可能漏网，这里靠数据库的唯一约束兜底
+    except Exception as e:#其他异常（比如数据库被锁、磁盘写满）
+        app.logger.exception("注册失败")#把详细报错写进后端日志，方便自己排查
+        return(
+            jsonify({"message": "注册失败，请稍后重试", "code": 500}),500,
+        )#注意：不要把 str(e) 返回给客户端，否则会泄露表结构等内部信息
     finally:
         conn.close()
 
@@ -89,13 +114,21 @@ def register():
 # 4. 登录接口(POST)
 @app.route("/api/login",methods=["POST"])
 def login():
-    data = request.get_json() #把客户端发来的JSON格式数据读取后转换成Python字典，方便后续使用
-    if not data:
+    data = request.get_json(silent=True) #把客户端发来的JSON格式数据读取后转换成Python字典，方便后续使用
+    if not isinstance(data, dict):
         return jsonify({"message": "请求内容不能为空，请传入JSON数据", "code": 400}), 400
     username = data.get("username")
     password = data.get("password")
 
-    conn = sqlite3.connect("database.db")
+    # 类型不对（传了列表/数字等）直接判为登录失败，避免 SQLite 报错变成 500
+    if not isinstance(username, str) or not isinstance(password, str):
+        return jsonify({"message": "用户名和密码格式不正确", "code": 400}), 400
+
+    # 登录和注册必须用同一套「去空格」规则，否则会出现「密码明明是对的却登录失败」
+    username = username.strip()
+    password = password.strip()
+
+    conn = get_connection()
 
     conn.row_factory = sqlite3.Row   # 让查询结果支持用列名取值
 
@@ -128,7 +161,13 @@ def login():
 
 # 5. JTW生成Token
 # 新增服务器私钥
-SECRET_KEY = "my_super_secret_key_123"
+# 优先从环境变量读（部署时用 export AUTH_SECRET_KEY=xxx 注入），读不到就用一个开发默认值。
+# 注意两点：
+#   1. 长度至少 32 字节是 HS256 的安全下限，太短 PyJWT 会报 InsecureKeyLengthWarning
+#   2. 这个默认值只适合本地学习，上线前一定要换成自己的环境变量
+SECRET_KEY = os.environ.get(
+    "AUTH_SECRET_KEY", "dev_only_secret_key_please_change_me_0123456789"
+)
 # HTTPS加密逻辑：
     # 默认加密：之前的临时密钥是一次性的，用完就销毁
     # 长期密钥：服务器用长期密钥配合算法加密计算生成 Token，然后Token本身有过期时间，在过期时间内，服务器不用存Token，只需要用本地的产期密钥用算法核算即可

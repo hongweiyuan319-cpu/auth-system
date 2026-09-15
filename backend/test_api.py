@@ -38,6 +38,11 @@ def test_register_and_login():
                 # 服务器的一些元数据信息（比如服务器类型、响应的数据格式等）
     print(f"状态码: {res_reg.status_code}")
     print(f"响应内容: {res_reg.json()}")
+    # 重复运行这个脚本时，用户已经存在，注册会返回 400「该用户名已被注册」
+    # 这是正常现象，不影响后面用这个账号做登录测试
+    if res_reg.status_code not in (200, 400):
+        print("❌ 注册接口异常，请检查后端是否已启动")
+        return
 
     # 2. 测试登录接口 (POST /api/login)
     print("\n[2] 正在测试【登录接口】...")
@@ -46,10 +51,15 @@ def test_register_and_login():
     print(f"响应内容: {res_log.json()}")
 
     # 3. 测试Token获取
-    token = res_log.json().get("token")
+    token = res_log.json().get("access_token")
     # login_res.json()：把服务器返回的响应内容转换成 JSON 格式（通常是一个字典）
-    # .get("token")：从这个字典里，把键名为 "token" 的那串核心字符串拿出来，赋值给变量 token
+    # .get("access_token")：从这个字典里，把键名为 "access_token" 的那串核心字符串拿出来，赋值给变量 token
+    # ⚠️ 后端返回的字段名是 access_token，不是 token！
+    #    原来写成 .get("token") 永远拿到 None，后面拼出来的请求头是 "Bearer None"，必然 401
     print("拿到的通行证：", token)
+    if not token:
+        print("❌ 没拿到 token，后面的【机密接口】测试一定失败，请先检查用户名/密码是否正确")
+        return
 
     # 4. 测试Token访问机密接口
     headers = {

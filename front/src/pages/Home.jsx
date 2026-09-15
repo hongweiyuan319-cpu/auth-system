@@ -13,8 +13,8 @@ function Home() {
   return (
     <div className="home-page">
       <div className="brand">
-        <span className="brand-logo">Q</span>
-        <span className="brand-name">QA AI Agent</span>
+        <span className="brand-logo">登</span>
+        <span className="brand-name">登录系统</span>
       </div>
 
       {user ? (
@@ -22,7 +22,8 @@ function Home() {
           <div className="avatar">👤</div>
           <p className="status status-ok">✓ 你已登录</p>
           <p className="subtitle">登录状态已保存，刷新页面也不会丢失</p>
-          <div className="token">token：{user}</div>
+          {/* 不要把 token 明文渲染到页面上（容易被截图/分享泄露），只显示状态就行 */}
+          <div className="token">登录凭证已安全保存（不展示具体内容）</div>
           <button onClick={logout}>退出登录</button>
         </>
       ) : (

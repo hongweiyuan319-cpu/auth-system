@@ -17,7 +17,3 @@ venv/
 
 # pytest 缓存
 .pytest_cache/
-
-# 生成的测试脚本与报告
-generated/
-report.md
