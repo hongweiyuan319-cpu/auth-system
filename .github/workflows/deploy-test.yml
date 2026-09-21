@@ -80,6 +80,25 @@ jobs:
             docker --version
             docker compose version
 
+            # 提前探一下镜像源通不通。这一步只诊断、不改任何配置。
+            # 国内服务器经常连不上 Docker Hub，早发现比等到构建中途报错省事。
+            echo "  镜像源连通性（200/401 都算通，000 表示连不上）："
+            if command -v curl >/dev/null 2>&1; then
+              for u in \
+                https://registry-1.docker.io/v2/ \
+                https://docker.m.daocloud.io/v2/ \
+                https://docker.1ms.run/v2/ \
+                https://hub.rat.dev/v2/ \
+                https://mirror.ccs.tencentyun.com/v2/ \
+                https://pypi.tuna.tsinghua.edu.cn/simple/ \
+              ; do
+                code=$(curl -s -o /dev/null -m 8 -w "%{http_code}" "$u" 2>/dev/null || true)
+                printf "    %-46s %s\n" "$u" "$code"
+              done
+            else
+              echo "    服务器没有 curl，跳过"
+            fi
+
             echo ""
             echo "========== 1. 确定用哪种方式拉代码 =========="
             # 背景（实测结论）：
