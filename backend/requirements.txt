@@ -1,0 +1,30 @@
+# auth-system 后端依赖清单
+#
+# 安装：
+#   ./.conda/bin/pip install -r backend/requirements.txt   (在项目根目录执行)
+#   或者 cd backend && pip install -r requirements.txt
+#
+# 验证环境：Python 3.14.4
+#
+# 注意：pip 包名 和 代码里的 import 名 不一定一样，最容易踩的两个坑：
+#   pip 上叫 PyJWT       → 代码里写 import jwt
+#   pip 上叫 Flask-Cors  → 代码里写 import flask_cors
+#   （PyPI 上真有一个叫 jwt 的包，装错了会报各种奇怪错误，别装那个）
+
+# ---- 运行必需 ----
+Flask==3.1.3            # Web 框架本体：app.route / jsonify / request
+Flask-Cors==6.0.5       # 跨域，前端 5173 调后端 5000 全靠它
+Werkzeug==3.1.6         # 密码哈希：generate_password_hash / check_password_hash
+PyJWT==2.13.0           # 签发和校验登录 token（代码里 import jwt）
+python-dotenv==1.2.3    # 读取项目根目录的 .env，让密钥和代码分离
+
+# ---- 测试用（只跑后端测试才需要）----
+requests==2.34.2        # test_api.py 里模拟 HTTP 请求
+
+# 说明：
+# 1. os / sqlite3 / datetime 是 Python 标准库，不用写在这里。
+# 2. db.py、validate_data.py 是你自己的模块，也不用写。
+# 3. Werkzeug 虽然是 Flask 的间接依赖（装 Flask 时会自动带上），
+#    但 app.py 里直接 import 了它，所以显式列出来 —— 原则是
+#    「直接 import 谁，就显式声明谁」，避免将来 Flask 换依赖时突然报错。
+# 4. 全部用 == 锁定精确版本，保证别人装出来的和你本机完全一致。
