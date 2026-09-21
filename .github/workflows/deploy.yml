@@ -1,0 +1,25 @@
+name: React-Flask CI/CD Pipeline
+
+# 1. 触发条件 (这就是你之前问的 Webhook 的具象化)
+on:
+  push:
+    branches:
+      - main  # 当你把代码 push 到 main 分支时，流水线自动启动
+
+# 2. 具体的任务 (Jobs)
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest  # GitHub 会临时为你分配一台干净的 Ubuntu 虚拟机来执行任务
+
+    # 3. 任务的详细步骤 (Steps)
+    steps:
+      - name: 1. 检出最新代码
+        uses: actions/checkout@v4
+        # 这一步相当于机器人在它的虚拟机里帮你执行了 git clone
+
+      - name: 2. 环境自检测试
+        run: |
+          echo "🎉 成功触发流水线！"
+          echo "当前代码已由 GitHub 机器人拉取完毕。"
+          echo "准备进入下一步：连接云服务器..."
+          
