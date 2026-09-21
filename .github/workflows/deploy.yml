@@ -1,25 +1,39 @@
 name: React-Flask CI/CD Pipeline
 
-# 1. 触发条件 (这就是你之前问的 Webhook 的具象化)
 on:
   push:
     branches:
-      - main  # 当你把代码 push 到 main 分支时，流水线自动启动
+      - main  # 每次推送到 main 分支时自动触发
 
-# 2. 具体的任务 (Jobs)
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest  # GitHub 会临时为你分配一台干净的 Ubuntu 虚拟机来执行任务
+    runs-on: ubuntu-latest
 
-    # 3. 任务的详细步骤 (Steps)
     steps:
-      - name: 1. 检出最新代码
-        uses: actions/checkout@v4
-        # 这一步相当于机器人在它的虚拟机里帮你执行了 git clone
+      - name: 登录云服务器并自动执行更新脚本
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            echo "🚀 成功连接服务器，开始拉取最新代码..."
+            cd /home/ubuntu/auth-system
+            
+            # 放行合并并拉取最新代码 (假设你在服务器配好了 Git 权限)
+            git pull origin main
 
-      - name: 2. 环境自检测试
-        run: |
-          echo "🎉 成功触发流水线！"
-          echo "当前代码已由 GitHub 机器人拉取完毕。"
-          echo "准备进入下一步：连接云服务器..."
-          
+            echo "🌐 === 开始编译并更新前端 ==="
+            cd front
+            npm install
+            npm run build
+            sudo cp -r dist/* /var/www/auth-frontend/
+            sudo chown -R www-data:www-data /var/www/auth-frontend
+            
+            echo "⚙️ === 开始更新后端并重启服务 ==="
+            cd ../backend
+            source venv/bin/activate
+            pip install -r requirements.txt
+            sudo systemctl restart auth-backend
+
+            echo "🎉 恭喜！全栈自动部署完成！"
