@@ -1,0 +1,120 @@
+# ===== 测试环境自动部署 =====
+#
+# 触发条件：推送到 test 分支（或在 Actions 页面手动点按钮）
+#
+# 为什么单独建这个文件，而不改 deploy.yml？
+#   deploy.yml 监听 main，负责「正式环境」；
+#   这个文件监听 test，负责「测试环境」。
+#   两个环境的部署方式不同（测试环境用 Docker Compose），
+#   混在一个文件里会用一堆 if 判断分支，反而更难维护。
+#
+# ⚠️ 关键设计：部署到独立目录 /home/ubuntu/auth-system-test
+#   为什么不复用 /home/ubuntu/auth-system？
+#     因为那个目录是正式环境在用的（systemd 的 auth-backend 从那里启动代码）。
+#     如果在里面执行 git checkout test，会把服务器上的代码切到测试分支 ——
+#     正式服务重启后就会跑起测试代码，这是很危险的副作用。
+#   所以测试环境用自己的独立目录，两边互不干扰。
+
+name: Deploy Test Environment (Docker)
+
+on:
+  push:
+    branches:
+      - test # 只有推送 test 分支才触发
+  workflow_dispatch: # 也支持在 GitHub 页面手动触发，方便排查问题
+
+# 防止两次推送并发部署，互相踩到对方
+concurrency:
+  group: deploy-test
+  cancel-in-progress: false
+
+env:
+  # 服务器上测试环境的独立目录（与正式环境隔离）
+  APP_DIR: /home/ubuntu/auth-system-test
+  REPO_URL: git@github.com:hongweiyuan319-cpu/auth-system.git
+
+jobs:
+  deploy-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 在测试服务器上同步代码并用 Docker 重建
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # script_stop: 脚本里任何一步返回非 0 就立即中止，
+          # 不写的话它会一路跑到底，最后还能"成功"，让人误以为部署成功了
+          script_stop: true
+          script: |
+            set -e
+
+            echo "========== 0. 环境检查 =========="
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "❌ 服务器上没有 docker。先安装："
+              echo "   curl -fsSL https://get.docker.com | sudo sh"
+              exit 1
+            fi
+            if ! docker compose version >/dev/null 2>&1; then
+              echo "❌ 没有 docker compose 插件（需要 Compose v2）"
+              exit 1
+            fi
+            if ! docker info >/dev/null 2>&1; then
+              echo "❌ 当前用户没有 docker 权限（多半是没加进 docker 组）"
+              echo "   解决：sudo usermod -aG docker $USER  然后重新登录一次"
+              exit 1
+            fi
+            docker --version
+            docker compose version
+
+            echo ""
+            echo "========== 1. 同步代码到测试专用目录 =========="
+            if [ ! -d "${{ env.APP_DIR }}/.git" ]; then
+              echo "  目录不存在，首次克隆..."
+              git clone -b test "${{ env.REPO_URL }}" "${{ env.APP_DIR }}"
+            fi
+            cd "${{ env.APP_DIR }}"
+
+            git fetch origin test
+            # -f -B 的含义：强制把本地 test 分支重置到 origin/test 并切过去。
+            # 部署目录里有本地改动一律丢弃 —— 服务器上的代码永远以仓库为准。
+            git checkout -f -B test origin/test
+            echo "  当前提交：$(git log --oneline -1)"
+
+            echo ""
+            echo "========== 2. 构建并启动测试环境 =========="
+            # --build 会重新构建镜像，保证跑的是最新代码
+            docker compose -f docker-compose.test.yml up -d --build
+
+            echo ""
+            echo "========== 3. 等待后端变健康 =========="
+            # 复用 compose 里配的 healthcheck（它会真的发 HTTP 请求，
+            # 而不是只看端口通不通），最多等 60 秒
+            CID=""
+            for i in $(seq 1 30); do
+              CID=$(docker compose -f docker-compose.test.yml ps -q backend-test)
+              STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$CID" 2>/dev/null || echo "unknown")
+              echo "  第 $i 次检查：$STATUS"
+              if [ "$STATUS" = "healthy" ]; then break; fi
+              sleep 2
+            done
+
+            if [ "$STATUS" != "healthy" ]; then
+              echo ""
+              echo "❌ 后端始终没能变成 healthy，最近 50 行日志："
+              docker compose -f docker-compose.test.yml logs --tail 50 backend-test
+              exit 1
+            fi
+
+            echo ""
+            echo "========== 4. 最终状态 =========="
+            docker compose -f docker-compose.test.yml ps
+
+            echo ""
+            echo "========== 5. 清理无用镜像，避免磁盘被撑满 =========="
+            docker image prune -f
+
+            echo ""
+            echo "🎉 测试环境部署完成"
+            echo "   访问地址：http://$(hostname -I | awk '{print $1}'):8080"
