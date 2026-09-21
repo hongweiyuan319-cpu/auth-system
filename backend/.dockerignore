@@ -1,0 +1,36 @@
+# ===== backend 的 .dockerignore =====
+#
+# 作用：docker build 时排除这些文件，不让它们被 COPY 进镜像。
+# 这个文件本身就是「构建上下文的一部分」，所以它自己也不用进镜像。
+
+# --- 最重要：绝不能把本机开发数据库打进镜像 ---
+# 两个原因：
+#   1. 里面有真实用户的用户名和密码哈希，会永久留在镜像层里
+#   2. 它被 .gitignore 忽略了，别人 clone 仓库后根本没有这个文件 ——
+#      如果镜像必须依赖它才能工作，那这个镜像就是「不自洽」的
+# 容器里需要表的话，app.py 的 init_db() 会在启动时自动建一个空的，不需要拷进来。
+database.db
+*.db
+
+# --- Python 缓存 ---
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# --- 虚拟环境（镜像里用 requirements.txt 重装，不拷本机的）---
+.venv/
+venv/
+.conda/
+
+# --- 构建相关，本身没必要进镜像 ---
+Dockerfile
+.dockerignore
+
+# --- macOS 垃圾 / 日志 ---
+.DS_Store
+*.log
+
+# --- 本地手动跑接口的脚本 ---
+# 如果你希望进容器里跑它，把这行删掉即可（它依赖的 requests 已经在 requirements.txt 里）
+test_api.py

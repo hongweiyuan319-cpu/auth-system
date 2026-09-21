@@ -1,0 +1,49 @@
+# ===== Docker 测试环境编排 =====
+#
+# 用法：
+#   启动：docker compose -f docker-compose.test.yml up -d --build
+#   访问：浏览器打开 http://<服务器IP>:8080
+#   看日志：docker compose -f docker-compose.test.yml logs -f
+#   停止：docker compose -f docker-compose.test.yml down
+#
+# 注意：这里故意不写 version: '3.8' ——
+#   Docker Compose v2 起该字段已废弃，写了会警告
+#   "the attribute `version` is obsolete"。
+
+services:
+  # ---------- 后端：Flask + gunicorn ----------
+  backend-test:
+    build: ./backend
+    restart: unless-stopped
+    ports:
+      # 映射到宿主机的 5001，避免和生产环境的 5000 冲突。
+      # 注意：这个映射只是方便你在服务器上用 curl 排查，
+      # 前端并不是通过它访问后端的 —— 前端走的是下面的容器名。
+      - "5001:5000"
+    env_file:
+      # 测试专用配置：含「测试用的假密钥」，故意公开、故意固定，因此可以提交到 git。
+      # 不能用 .env.example —— 那是个空模板，SECRET_KEY 为空会让容器启动即崩溃。
+      - .env.test
+    healthcheck:
+      # 探针脚本在 backend/healthcheck.py，随代码一起进了镜像。
+      # 它真的发一个 HTTP 请求来判断「应用层是否就绪」，而不是只看端口通没通 ——
+      # 因为 gunicorn 会先绑定端口再加载应用，只看端口容易误判成健康。
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ---------- 前端：Nginx 托管静态页 + 反代 /api/ 到后端 ----------
+  front-test:
+    build: ./front
+    restart: unless-stopped
+    ports:
+      # 测试工程师通过 http://<服务器IP>:8080 访问测试环境
+      - "8080:80"
+    depends_on:
+      backend-test:
+        # 关键：等后端「就绪」（健康检查通过）而不是仅仅「启动」。
+        # 只写 depends_on: [backend-test] 的话，Docker 只等容器进程起来，
+        # Flask 可能还没开始监听，测试工程师的首屏请求就会撞上 502。
+        condition: service_healthy

@@ -24,6 +24,7 @@ venv/
 .env.*
 !.env.example
 !.env.sample
+!.env.test
 .flaskenv
 
 # 证书与私钥

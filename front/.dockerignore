@@ -1,0 +1,30 @@
+# ===== front 的 .dockerignore =====
+#
+# 作用：docker build 时排除这些文件。
+# 这个文件不配好的话，前端镜像很可能直接构建失败 —— 见下面第一条。
+
+# --- 最关键：绝不能把本机（macOS/arm64）的 node_modules 拷进 Linux 镜像 ---
+# front/Dockerfile 里有一句 COPY . .，它会把宿主机目录整个拷进去。
+# 如果不排除 node_modules，就会发生这件事：
+#     ① npm ci 在容器里装好了 Linux 版依赖
+#     ② COPY . . 把 macOS 版的 node_modules 覆盖上去
+#     ③ npm run build 时，vite/rolldown 去加载 arm64 的原生二进制 →
+#        架构不匹配，直接报错，或者产出一个坏包
+# 顺带还让镜像白白多几百 MB。
+node_modules/
+
+# --- 本机构建产物：镜像里会重新 build，拷进去纯属浪费 ---
+dist/
+.vite/
+
+# --- 构建相关，没必要进镜像 ---
+Dockerfile
+.dockerignore
+
+# --- macOS 垃圾 / 日志 ---
+.DS_Store
+*.log
+
+# --- 环境变量（前端目前用不到，留着防止以后误传）---
+.env
+.env.*

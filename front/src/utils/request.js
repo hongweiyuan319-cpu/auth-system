@@ -44,7 +44,17 @@ import axios from 'axios';
 
         //2. 创建实例，顺便把"通用设置"写好
 const request = axios.create({
-  baseURL: 'http://127.0.0.1:5000',   // 后端地址，只写一次
+  // baseURL 留空 = 用「相对路径」，请求会发到当前页面所在的域名下。
+  // 为什么不写死 http://127.0.0.1:5000 ？
+  //   1. 写死的地址会被 vite 编译进静态 JS。测试工程师从 http://服务器IP:8080
+  //      打开页面时，浏览器会去请求「他自己电脑」的 5000 端口 —— 那里什么都没有，
+  //      所有请求必然失败。
+  //   2. nginx 里配的 location /api/ 反向代理也永远不会被命中，等于白配。
+  // 留空之后，请求形如 /api/login，由谁来转发取决于环境：
+  //   本地开发 → vite.config.js 里的 server.proxy 转发到 127.0.0.1:5000
+  //   Docker   → nginx.conf 里的 location /api/ 转发到后端容器
+  // 同一份前端代码两种环境都能跑，不用为了环境改代码。
+  baseURL: '',
   timeout: 10000,                     // 超过 10 秒没响应就报错
 });
 
