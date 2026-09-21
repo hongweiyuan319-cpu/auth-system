@@ -4,9 +4,15 @@ FROM python:3.14-slim
 
 WORKDIR /app
 
+# pip 源做成构建参数：
+#   默认用官方 PyPI（镜像保持可移植，换到别的环境也不用改）
+#   国内服务器直连 PyPI 很慢甚至超时，在 docker-compose.test.yml 里
+#   用 build.args 传镜像源覆盖即可。
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
 # 先只拷依赖清单：只要它没变，这一层就命中缓存，不用重装依赖
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r requirements.txt
 
 # 再拷代码。database.db / __pycache__ 已被 .dockerignore 排除 ——
 # 本机开发库里有真实用户的密码哈希，不该进镜像；

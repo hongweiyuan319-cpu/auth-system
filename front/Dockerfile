@@ -4,6 +4,9 @@
 FROM node:24-alpine AS builder
 WORKDIR /app
 
+# npm 源同样做成构建参数：默认官方源，国内环境在 compose 里覆盖
+ARG NPM_REGISTRY=https://registry.npmjs.org
+
 # 先只拷依赖清单：只要它俩没变，这一层就命中 Docker 缓存，不用重装依赖
 COPY package.json package-lock.json ./
 
@@ -11,7 +14,7 @@ COPY package.json package-lock.json ./
 #   ci 严格按 package-lock.json 安装，每次构建出来的依赖版本完全一致；
 #   install 可能悄悄升级版本，导致「我这儿能跑、你那儿不行」。
 # （本地已用 npm ci --dry-run 验证过 lock 文件是同步的，能装上）
-RUN npm ci
+RUN npm ci --registry="$NPM_REGISTRY"
 
 # 再拷源码。注意 node_modules 已被 .dockerignore 排除 ——
 # 否则这行会把宿主机（macOS/arm64）的依赖覆盖掉上面装好的 Linux 版，构建必挂。

@@ -13,7 +13,11 @@
 services:
   # ---------- 后端：Flask + gunicorn ----------
   backend-test:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        # 服务器在国内，直连 PyPI 会超时，用清华源
+        PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
     restart: unless-stopped
     ports:
       # 映射到宿主机的 5001，避免和生产环境的 5000 冲突。
@@ -36,7 +40,11 @@ services:
 
   # ---------- 前端：Nginx 托管静态页 + 反代 /api/ 到后端 ----------
   front-test:
-    build: ./front
+    build:
+      context: ./front
+      args:
+        # 同样用国内 npm 镜像
+        NPM_REGISTRY: https://registry.npmmirror.com
     restart: unless-stopped
     ports:
       # 测试工程师通过 http://<服务器IP>:8080 访问测试环境
