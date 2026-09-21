@@ -84,9 +84,16 @@ jobs:
 
             echo ""
             echo "========== 2. 检查服务器有没有仓库访问权限 =========="
-            # 注意：ssh -T git@github.com 就算成功也返回退出码 1
-            #（GitHub 不提供 shell 访问），所以必须看输出内容而不是退出码。
-            if ssh -T -o BatchMode=yes git@github.com 2>&1 | grep -q "successfully authenticated"; then
+            # 注意两个坑：
+            #   1. ssh -T git@github.com 就算认证成功也返回退出码 1
+            #      （GitHub 不提供 shell 访问），所以不能看退出码，要看输出内容。
+            #      这里用 `|| true` 吞掉它的退出码，避免被 set -e / script_stop 判为失败。
+            #   2. 不要把 ssh 直接接在 if 的管道里。script_stop 会给脚本加包装，
+            #      管道里的 grep -q 提前退出可能让整条管道被判定为失败。
+            #      先存到变量里再判断，最稳。
+            SSH_CHECK=$(ssh -T -o BatchMode=yes -o ConnectTimeout=10 git@github.com 2>&1 || true)
+            echo "  ssh 返回：$SSH_CHECK"
+            if echo "$SSH_CHECK" | grep -q "successfully authenticated"; then
               echo "  ✅ 服务器已具备仓库访问权限"
             else
               echo "  ⚠️ 服务器无法通过 SSH 认证到 github.com"
