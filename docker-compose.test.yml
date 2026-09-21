@@ -55,3 +55,12 @@ services:
         # 只写 depends_on: [backend-test] 的话，Docker 只等容器进程起来，
         # Flask 可能还没开始监听，测试工程师的首屏请求就会撞上 502。
         condition: service_healthy
+    healthcheck:
+      # 前端也要有健康检查，否则 `up --wait` 不会等 nginx 真正就绪，
+      # 会出现「容器 Up 了但访问返回 000」的假成功。
+      # nginx:alpine 基于 busybox，自带 wget（镜像里没有 curl）
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s

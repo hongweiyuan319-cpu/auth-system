@@ -200,41 +200,44 @@ jobs:
 
             echo ""
             echo "========== 3. 构建并启动测试环境 =========="
-            # --build 会重新构建镜像，保证跑的是最新代码
-            docker compose -f docker-compose.test.yml up -d --build
+            # --build   重新构建镜像，保证跑的是最新代码
+            # --wait    等所有服务的 healthcheck 都通过才返回
+            #           （只用 -d 的话，命令返回时 nginx 可能还在跑 entrypoint
+            #            脚本，紧接着的验证会拿到 000）
+            docker compose -f docker-compose.test.yml up -d --build --wait
 
             echo ""
-            echo "========== 4. 等待后端变健康 =========="
-            # 复用 compose 里配的 healthcheck（它会真的发 HTTP 请求，
-            # 而不是只看端口通不通），最多等 60 秒
-            CID=""
-            for i in $(seq 1 30); do
-              CID=$(docker compose -f docker-compose.test.yml ps -q backend-test)
+            echo "========== 4. 两个容器的就绪状态 =========="
+            # --wait 已经等过了，这里只是把结果打出来留个记录
+            for svc in backend-test front-test; do
+              CID=$(docker compose -f docker-compose.test.yml ps -q "$svc")
               STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$CID" 2>/dev/null || echo "unknown")
-              echo "  第 $i 次检查：$STATUS"
-              if [ "$STATUS" = "healthy" ]; then break; fi
-              sleep 2
+              echo "  $svc -> $STATUS"
             done
-
-            if [ "$STATUS" != "healthy" ]; then
-              echo ""
-              echo "❌ 后端始终没能变成 healthy，最近 50 行日志："
-              docker compose -f docker-compose.test.yml logs --tail 50 backend-test
-              exit 1
-            fi
 
             echo ""
             echo "========== 5. 端到端验证（经 nginx 代理）=========="
-            # 前面的 healthcheck 只证明「后端容器」活着；
+            # 前面的 healthcheck 只证明「容器」活着；
             # 这里再从「前端 nginx」那一侧打一次，才能确认 nginx.conf 里的
             # /api/ 反代确实通 —— 也就是浏览器里走的真实路径。
-            FRONT_CODE=$(curl -s -o /dev/null -m 10 -w "%{http_code}" http://127.0.0.1:8080/ || true)
+            #
+            # 为什么这里还要轮询？第一次加这个检查时就踩了坑：
+            # up -d 之后立刻 curl，nginx 还在跑 entrypoint 脚本，拿到的是 000。
+            # --wait 已经等过一轮了，这里再给点余量，避免偶发假失败。
+            FRONT_CODE="000"
+            for i in $(seq 1 15); do
+              FRONT_CODE=$(curl -s -o /dev/null -m 5 -w "%{http_code}" http://127.0.0.1:8080/ || true)
+              if [ "$FRONT_CODE" = "200" ]; then break; fi
+              echo "  第 $i 次探前端首页：$FRONT_CODE"
+              sleep 2
+            done
+
             API_CODE=$(curl -s -o /dev/null -m 10 -w "%{http_code}" http://127.0.0.1:8080/api/user/profile || true)
             echo "  前端首页            http://127.0.0.1:8080/          -> $FRONT_CODE"
             echo "  经 nginx 调后端接口  http://127.0.0.1:8080/api/...   -> $API_CODE"
 
             if [ "$FRONT_CODE" != "200" ]; then
-              echo "❌ 前端首页没返回 200，nginx 可能没起来"
+              echo "❌ 前端首页没返回 200"
               docker compose -f docker-compose.test.yml logs --tail 30 front-test
               exit 1
             fi
