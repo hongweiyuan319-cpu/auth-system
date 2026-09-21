@@ -148,9 +148,31 @@ jobs:
 
             echo ""
             echo "========== 2. 同步代码到测试专用目录 =========="
+            # 服务器到 github.com 的连接不稳定 —— 实测出现过：
+            #   Failed to connect to github.com port 443 after 130295 ms: Connection timed out
+            # 所以加两道保护：
+            #   1. 低速阈值：连接卡住 30 秒就主动断开，不要干等到 130 秒
+            #   2. 重试：最多 3 次，给网络波动留点余地
+            export GIT_HTTP_LOW_SPEED_LIMIT=1000
+            export GIT_HTTP_LOW_SPEED_TIME=30
+
             if [ ! -d "${{ env.APP_DIR }}/.git" ]; then
               echo "  目录不存在，首次克隆..."
-              git clone "$SYNC_URL" "${{ env.APP_DIR }}"
+              # 先克隆到临时目录，成功了再改名过去 ——
+              # 这样重试时不会污染正式目录，克隆本身也是「一次成型」的
+              TMP_DIR="${{ env.APP_DIR }}.tmp"
+              ok=0
+              for attempt in 1 2 3; do
+                rm -rf "$TMP_DIR"
+                if git clone "$SYNC_URL" "$TMP_DIR"; then ok=1; break; fi
+                echo "  第 $attempt 次克隆失败，5 秒后重试..."
+                sleep 5
+              done
+              if [ "$ok" != "1" ]; then
+                echo "❌ 连续 3 次克隆失败，请检查服务器到 github.com 的网络"
+                exit 1
+              fi
+              mv "$TMP_DIR" "${{ env.APP_DIR }}"
               # 克隆完立刻把带令牌的地址从配置里抹掉，
               # 免得令牌（即使很快过期）留在服务器的 .git/config 里
               git -C "${{ env.APP_DIR }}" remote set-url origin "$REPO_URL"
@@ -160,7 +182,17 @@ jobs:
             # 显式用 SYNC_URL 去 fetch，而不是让 git 读 origin：
             # 这样临时令牌不会持久化在仓库配置里，每次部署现取现用。
             # 开头的 + 表示允许非快进，强制把远端 test 同步过来。
-            git fetch "$SYNC_URL" "+test:refs/remotes/origin/test"
+            ok=0
+            for attempt in 1 2 3; do
+              if git fetch "$SYNC_URL" "+test:refs/remotes/origin/test"; then ok=1; break; fi
+              echo "  第 $attempt 次拉取失败，5 秒后重试..."
+              sleep 5
+            done
+            if [ "$ok" != "1" ]; then
+              echo "❌ 连续 3 次拉取失败，请检查服务器到 github.com 的网络"
+              exit 1
+            fi
+
             # -f -B 的含义：强制把本地 test 分支重置到 origin/test 并切过去。
             # 部署目录里有本地改动一律丢弃 —— 服务器上的代码永远以仓库为准。
             git checkout -f -B test origin/test
