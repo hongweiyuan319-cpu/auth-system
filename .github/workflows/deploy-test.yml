@@ -23,6 +23,10 @@ on:
       - test # 只有推送 test 分支才触发
   workflow_dispatch: # 也支持在 GitHub 页面手动触发，方便排查问题
 
+# GITHUB_TOKEN 的权限：拉代码只需要读
+permissions:
+  contents: read
+
 # 防止两次推送并发部署，互相踩到对方
 concurrency:
   group: deploy-test
@@ -31,7 +35,11 @@ concurrency:
 env:
   # 服务器上测试环境的独立目录（与正式环境隔离）
   APP_DIR: /home/ubuntu/auth-system-test
-  REPO_URL: git@github.com:hongweiyuan319-cpu/auth-system.git
+  # 用 HTTPS 而不是 SSH：
+  #   实测服务器上没有能访问本仓库的 SSH 密钥（ssh -T git@github.com 返回
+  #   Permission denied (publickey)），所以 git@github.com:... 这种地址
+  #   在服务器上克隆必定失败。
+  REPO_URL: https://github.com/hongweiyuan319-cpu/auth-system.git
 
 jobs:
   deploy-test:
@@ -69,61 +77,79 @@ jobs:
             docker compose version
 
             echo ""
-            echo "========== 1. 准备 github.com 的主机指纹 =========="
-            # 服务器第一次连 github.com 时，~/.ssh/known_hosts 里没有它的主机指纹，
-            # ssh 会直接拒绝连接并报 "Host key verification failed"。
-            # CI 是非交互环境，没法弹 "yes/no" 让你确认，所以必须先把指纹写进去。
-            mkdir -p ~/.ssh && chmod 700 ~/.ssh
-            if ! ssh-keygen -F github.com >/dev/null 2>&1; then
-              echo "  首次连接，写入 github.com 主机指纹..."
-              ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
-            fi
-            # 兜底：万一 ssh-keyscan 不可用，accept-new 会在首次连接时自动接受。
-            # 信任模型和人工敲 "yes" 完全一样，且目标是我们固定的 github.com，可以接受。
-            export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"
+            echo "========== 1. 确定用哪种方式拉代码 =========="
+            # 背景（实测结论）：
+            #   - 服务器到 github.com 的网络是通的
+            #   - 但服务器上没有能访问本仓库的 SSH 密钥，
+            #     ssh -T git@github.com 返回 Permission denied (publickey)
+            #   所以不能直接用 git@github.com 地址克隆。
+            #
+            # 策略，按优先级：
+            #   ① 复用正式环境目录里已配好的 remote
+            #      （main 的流水线一直能成功跑 git pull origin main，
+            #        说明那套凭据是好的，没必要重新配一套）
+            #   ② 退而用 GitHub 临时令牌走 HTTPS
+            #      GITHUB_TOKEN 由 Actions 自动注入，不需要任何手工配置
 
-            echo ""
-            echo "========== 2. 检查服务器有没有仓库访问权限 =========="
-            # 注意两个坑：
-            #   1. ssh -T git@github.com 就算认证成功也返回退出码 1
-            #      （GitHub 不提供 shell 访问），所以不能看退出码，要看输出内容。
-            #      这里用 `|| true` 吞掉它的退出码，避免被 set -e / script_stop 判为失败。
-            #   2. 不要把 ssh 直接接在 if 的管道里。script_stop 会给脚本加包装，
-            #      管道里的 grep -q 提前退出可能让整条管道被判定为失败。
-            #      先存到变量里再判断，最稳。
-            SSH_CHECK=$(ssh -T -o BatchMode=yes -o ConnectTimeout=10 git@github.com 2>&1 || true)
-            echo "  ssh 返回：$SSH_CHECK"
-            if echo "$SSH_CHECK" | grep -q "successfully authenticated"; then
-              echo "  ✅ 服务器已具备仓库访问权限"
+            REPO_URL="${{ env.REPO_URL }}"
+            SYNC_URL=""
+
+            # ---- ① 看看有没有现成的正式环境目录 ----
+            EXISTING_DIR=""
+            for d in /home/*/auth-system /root/auth-system; do
+              if [ -d "$d/.git" ]; then EXISTING_DIR="$d"; break; fi
+            done
+
+            if [ -n "$EXISTING_DIR" ]; then
+              CANDIDATE=$(git -C "$EXISTING_DIR" remote get-url origin 2>/dev/null || true)
+              echo "  找到现有部署目录：$EXISTING_DIR"
+              if [ -n "$CANDIDATE" ]; then
+                # 只打印脱敏后的地址！URL 里可能内嵌令牌，绝不能原样打进 CI 日志
+                SAFE=$(echo "$CANDIDATE" | sed -E 's#//[^@/]*@#//***@#')
+                echo "  它的 origin 是：$SAFE"
+                # 只复用 HTTPS 形式；SSH 形式已实测在当前环境不可用
+                case "$CANDIDATE" in
+                  https://*) SYNC_URL="$CANDIDATE" ;;
+                  *)         echo "  它是 SSH 形式，已实测不可用，跳过" ;;
+                esac
+              fi
             else
-              echo "  ⚠️ 服务器无法通过 SSH 认证到 github.com"
-              echo "     若下面克隆失败，请在服务器上生成部署密钥："
-              echo "       ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ''"
-              echo "       cat ~/.ssh/id_ed25519.pub"
-              echo "     再把公钥加到 GitHub 仓库 → Settings → Deploy keys"
+              echo "  没找到现有部署目录"
+            fi
+
+            # ---- ② 兜底：用 Actions 自带的临时令牌 ----
+            if [ -z "$SYNC_URL" ]; then
+              echo "  改用 GITHUB_TOKEN 走 HTTPS（临时令牌，任务结束即失效）"
+              SYNC_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@${REPO_URL#https://}"
             fi
 
             echo ""
-            echo "========== 3. 同步代码到测试专用目录 =========="
+            echo "========== 2. 同步代码到测试专用目录 =========="
             if [ ! -d "${{ env.APP_DIR }}/.git" ]; then
               echo "  目录不存在，首次克隆..."
-              git clone -b test "${{ env.REPO_URL }}" "${{ env.APP_DIR }}"
+              git clone "$SYNC_URL" "${{ env.APP_DIR }}"
+              # 克隆完立刻把带令牌的地址从配置里抹掉，
+              # 免得令牌（即使很快过期）留在服务器的 .git/config 里
+              git -C "${{ env.APP_DIR }}" remote set-url origin "$REPO_URL"
             fi
             cd "${{ env.APP_DIR }}"
 
-            git fetch origin test
+            # 显式用 SYNC_URL 去 fetch，而不是让 git 读 origin：
+            # 这样临时令牌不会持久化在仓库配置里，每次部署现取现用。
+            # 开头的 + 表示允许非快进，强制把远端 test 同步过来。
+            git fetch "$SYNC_URL" "+test:refs/remotes/origin/test"
             # -f -B 的含义：强制把本地 test 分支重置到 origin/test 并切过去。
             # 部署目录里有本地改动一律丢弃 —— 服务器上的代码永远以仓库为准。
             git checkout -f -B test origin/test
             echo "  当前提交：$(git log --oneline -1)"
 
             echo ""
-            echo "========== 4. 构建并启动测试环境 =========="
+            echo "========== 3. 构建并启动测试环境 =========="
             # --build 会重新构建镜像，保证跑的是最新代码
             docker compose -f docker-compose.test.yml up -d --build
 
             echo ""
-            echo "========== 5. 等待后端变健康 =========="
+            echo "========== 4. 等待后端变健康 =========="
             # 复用 compose 里配的 healthcheck（它会真的发 HTTP 请求，
             # 而不是只看端口通不通），最多等 60 秒
             CID=""
@@ -143,11 +169,11 @@ jobs:
             fi
 
             echo ""
-            echo "========== 6. 最终状态 =========="
+            echo "========== 5. 最终状态 =========="
             docker compose -f docker-compose.test.yml ps
 
             echo ""
-            echo "========== 7. 清理无用镜像，避免磁盘被撑满 =========="
+            echo "========== 6. 清理无用镜像，避免磁盘被撑满 =========="
             docker image prune -f
 
             echo ""
