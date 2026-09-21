@@ -1,5 +1,7 @@
 import os
 import sqlite3 
+from pathlib import Path
+from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from flask_cors import CORS  # 允许前端跨域访问
 from werkzeug.security import check_password_hash, generate_password_hash #引入哈希
@@ -8,6 +10,13 @@ from validate_data import check_username_exists
 from db import get_connection  # 统一的数据库连接（固定指向 backend/database.db）
 import jwt
 import datetime
+
+
+# 从项目根目录的 .env 读取环境变量（backend/ 的上一级）。
+# 用绝对路径而不是相对路径，保证不管从哪个目录启动 app.py，找到的都是同一个 .env。
+# load_dotenv 默认「不覆盖」已存在的环境变量 —— 这正是我们想要的：
+# 部署时用 export 注入的正式值，优先级高于本地 .env 里的开发值。
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 #1. 开启跨域
@@ -159,15 +168,27 @@ def login():
         return jsonify({"message":"登录失败", "code":400}),400
 
 
-# 5. JTW生成Token
-# 新增服务器私钥
-# 优先从环境变量读（部署时用 export AUTH_SECRET_KEY=xxx 注入），读不到就用一个开发默认值。
-# 注意两点：
-#   1. 长度至少 32 字节是 HS256 的安全下限，太短 PyJWT 会报 InsecureKeyLengthWarning
-#   2. 这个默认值只适合本地学习，上线前一定要换成自己的环境变量
-SECRET_KEY = os.environ.get(
-    "AUTH_SECRET_KEY", "dev_only_secret_key_please_change_me_0123456789"
-)
+# 5. JWT生成Token
+# 新增服务器私钥（签名密钥）
+# 值写在项目根目录的 .env 里（已被 .gitignore 忽略），由上面的 load_dotenv() 读进来。
+# 长度至少 32 字节是 HS256 的安全下限，太短 PyJWT 会报 InsecureKeyLengthWarning。
+#
+# 为什么不再写兜底默认值？
+#   以前这里写的是 os.environ.get("AUTH_SECRET_KEY", "dev_only_secret_key_...")，
+#   那个默认值已经随代码提交到了 GitHub —— 等于把签名密钥公开了。
+#   任何人拿到那串字符，都能自己签出一个「合法」token 冒充任意用户登录，
+#   而且服务端无法分辨（JWT 无状态，只验签名不查库）。
+#   所以改成「读不到就直接启动失败」：
+#       忘设 = 服务起不来（你立刻就会发现）
+#   而不是 忘设 = 悄悄用公开密钥（你可能永远发现不了）
+SECRET_KEY = os.environ.get("AUTH_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError(
+        "缺少环境变量 AUTH_SECRET_KEY，服务拒绝启动。\n"
+        "请先准备配置文件：\n"
+        "    cp .env.example .env        # 在项目根目录执行\n"
+        "    python -c \"import secrets; print(secrets.token_hex(32))\"  # 生成密钥填进去\n"
+    )
 # HTTPS加密逻辑：
     # 默认加密：之前的临时密钥是一次性的，用完就销毁
     # 长期密钥：服务器用长期密钥配合算法加密计算生成 Token，然后Token本身有过期时间，在过期时间内，服务器不用存Token，只需要用本地的产期密钥用算法核算即可

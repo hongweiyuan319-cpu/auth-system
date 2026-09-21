@@ -17,3 +17,30 @@ venv/
 
 # pytest 缓存
 .pytest_cache/
+
+# ===== 密钥 / 凭据（绝不提交）=====
+# 环境变量文件：SECRET_KEY、JWT 密钥、数据库密码都写在这里
+.env
+.env.*
+!.env.example
+!.env.sample
+.flaskenv
+
+# 证书与私钥
+*.pem
+*.key
+*.p12
+*.pfx
+
+# SSH 私钥（万一被拷进项目目录时兜底）
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.ssh/
+
+# 云平台 / 服务账号凭据
+credentials.json
+serviceAccountKey.json
+.netrc
+
