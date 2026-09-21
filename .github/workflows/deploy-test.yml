@@ -192,13 +192,41 @@ jobs:
             fi
 
             echo ""
-            echo "========== 5. 最终状态 =========="
+            echo "========== 5. 端到端验证（经 nginx 代理）=========="
+            # 前面的 healthcheck 只证明「后端容器」活着；
+            # 这里再从「前端 nginx」那一侧打一次，才能确认 nginx.conf 里的
+            # /api/ 反代确实通 —— 也就是浏览器里走的真实路径。
+            FRONT_CODE=$(curl -s -o /dev/null -m 10 -w "%{http_code}" http://127.0.0.1:8080/ || true)
+            API_CODE=$(curl -s -o /dev/null -m 10 -w "%{http_code}" http://127.0.0.1:8080/api/user/profile || true)
+            echo "  前端首页            http://127.0.0.1:8080/          -> $FRONT_CODE"
+            echo "  经 nginx 调后端接口  http://127.0.0.1:8080/api/...   -> $API_CODE"
+
+            if [ "$FRONT_CODE" != "200" ]; then
+              echo "❌ 前端首页没返回 200，nginx 可能没起来"
+              docker compose -f docker-compose.test.yml logs --tail 30 front-test
+              exit 1
+            fi
+
+            # 不带 token 请求受保护接口，预期就是 401。
+            # 这个判断同时证明两件事：
+            #   1. nginx 的 /api/ 反代确实通到了后端
+            #   2. JWT 鉴权在起作用（没有因为配置错误变成放行 200）
+            if [ "$API_CODE" != "401" ]; then
+              echo "❌ 经 nginx 的接口返回 $API_CODE，预期 401"
+              exit 1
+            fi
+            echo "  ✅ 端到端验证通过：nginx 正常，/api/ 反代通到后端，鉴权生效"
+
+            echo ""
+            echo "========== 6. 最终状态 =========="
             docker compose -f docker-compose.test.yml ps
 
             echo ""
-            echo "========== 6. 清理无用镜像，避免磁盘被撑满 =========="
+            echo "========== 7. 清理无用镜像，避免磁盘被撑满 =========="
             docker image prune -f
 
             echo ""
             echo "🎉 测试环境部署完成"
-            echo "   访问地址：http://$(hostname -I | awk '{print $1}'):8080"
+            echo "   服务器上自测：http://$(hostname -I | awk '{print $1}'):8080"
+            echo "   外部访问：    http://<服务器公网IP>:8080"
+            echo "   外网打不开的话，检查云服务器安全组/防火墙有没有放行 8080"
