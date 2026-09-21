@@ -69,7 +69,35 @@ jobs:
             docker compose version
 
             echo ""
-            echo "========== 1. 同步代码到测试专用目录 =========="
+            echo "========== 1. 准备 github.com 的主机指纹 =========="
+            # 服务器第一次连 github.com 时，~/.ssh/known_hosts 里没有它的主机指纹，
+            # ssh 会直接拒绝连接并报 "Host key verification failed"。
+            # CI 是非交互环境，没法弹 "yes/no" 让你确认，所以必须先把指纹写进去。
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            if ! ssh-keygen -F github.com >/dev/null 2>&1; then
+              echo "  首次连接，写入 github.com 主机指纹..."
+              ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+            fi
+            # 兜底：万一 ssh-keyscan 不可用，accept-new 会在首次连接时自动接受。
+            # 信任模型和人工敲 "yes" 完全一样，且目标是我们固定的 github.com，可以接受。
+            export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"
+
+            echo ""
+            echo "========== 2. 检查服务器有没有仓库访问权限 =========="
+            # 注意：ssh -T git@github.com 就算成功也返回退出码 1
+            #（GitHub 不提供 shell 访问），所以必须看输出内容而不是退出码。
+            if ssh -T -o BatchMode=yes git@github.com 2>&1 | grep -q "successfully authenticated"; then
+              echo "  ✅ 服务器已具备仓库访问权限"
+            else
+              echo "  ⚠️ 服务器无法通过 SSH 认证到 github.com"
+              echo "     若下面克隆失败，请在服务器上生成部署密钥："
+              echo "       ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ''"
+              echo "       cat ~/.ssh/id_ed25519.pub"
+              echo "     再把公钥加到 GitHub 仓库 → Settings → Deploy keys"
+            fi
+
+            echo ""
+            echo "========== 3. 同步代码到测试专用目录 =========="
             if [ ! -d "${{ env.APP_DIR }}/.git" ]; then
               echo "  目录不存在，首次克隆..."
               git clone -b test "${{ env.REPO_URL }}" "${{ env.APP_DIR }}"
@@ -83,12 +111,12 @@ jobs:
             echo "  当前提交：$(git log --oneline -1)"
 
             echo ""
-            echo "========== 2. 构建并启动测试环境 =========="
+            echo "========== 4. 构建并启动测试环境 =========="
             # --build 会重新构建镜像，保证跑的是最新代码
             docker compose -f docker-compose.test.yml up -d --build
 
             echo ""
-            echo "========== 3. 等待后端变健康 =========="
+            echo "========== 5. 等待后端变健康 =========="
             # 复用 compose 里配的 healthcheck（它会真的发 HTTP 请求，
             # 而不是只看端口通不通），最多等 60 秒
             CID=""
@@ -108,11 +136,11 @@ jobs:
             fi
 
             echo ""
-            echo "========== 4. 最终状态 =========="
+            echo "========== 6. 最终状态 =========="
             docker compose -f docker-compose.test.yml ps
 
             echo ""
-            echo "========== 5. 清理无用镜像，避免磁盘被撑满 =========="
+            echo "========== 7. 清理无用镜像，避免磁盘被撑满 =========="
             docker image prune -f
 
             echo ""
