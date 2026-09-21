@@ -52,9 +52,13 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          # script_stop: 脚本里任何一步返回非 0 就立即中止，
-          # 不写的话它会一路跑到底，最后还能"成功"，让人误以为部署成功了
-          script_stop: true
+          # ⚠️ 这里故意不写 script_stop: true！
+          #   从 appleboy/drone-ssh 的源码看，开启 script_stop 后脚本会被
+          #       strings.Split(cmd, "\n")
+          #   按行拆开逐行执行，多行结构（if/then、for/do、case/esac）会被拆散，
+          #   报错形如：
+          #       bash: -c: line 96: syntax error near unexpected token `;'
+          #   我们要的「任何一步失败就中止」由脚本开头的 `set -e` 保证，效果一样。
           script: |
             set -e
 
