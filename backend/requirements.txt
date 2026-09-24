@@ -17,6 +17,7 @@ Flask-Cors==6.0.5       # 跨域，前端 5173 调后端 5000 全靠它
 Werkzeug==3.1.6         # 密码哈希：generate_password_hash / check_password_hash
 PyJWT==2.13.0           # 签发和校验登录 token（代码里 import jwt）
 python-dotenv==1.2.3    # 读取项目根目录的 .env，让密钥和代码分离
+gunicorn==26.2.0        # 容器里用它启动后端（本地 python app.py 时用不到，但镜像里必须有）
 
 # ---- 测试用（只跑后端测试才需要）----
 requests==2.34.2        # test_api.py 里模拟 HTTP 请求
