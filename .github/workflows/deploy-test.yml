@@ -99,6 +99,18 @@ jobs:
               echo "    服务器没有 curl，跳过"
             fi
 
+            # 顺手把磁盘情况也打出来。为什么要放这里？
+            #   构建或启动失败时，「磁盘被撑满」是很常见、又最不容易一眼看出的原因 ——
+            #   报错往往出现在构建中途，看起来像是 Dockerfile 写错了。
+            #   提前记录一行，出事时对着日志就能直接排除掉这种可能。
+            # 怎么看：df 关注「系统盘 /」那一行的 Avail（剩余）和 Use%；
+            #   docker system df 则告诉我们空间被谁吃了
+            #   （Images / Containers / Local Volumes / Build Cache 四项）。
+            echo "  磁盘占用（系统盘）："
+            df -h / | sed 's/^/    /' || true
+            echo "  Docker 空间占用明细："
+            docker system df 2>/dev/null | sed 's/^/    /' || true
+
             echo ""
             echo "========== 1. 确定用哪种方式拉代码 =========="
             # 背景（实测结论）：
@@ -199,7 +211,54 @@ jobs:
             echo "  当前提交：$(git log --oneline -1)"
 
             echo ""
-            echo "========== 3. 构建并启动测试环境 =========="
+            echo "========== 3. 释放端口并做占用预检 =========="
+            # ⚠️ 这一节是被真实事故加进来的，不要删。
+            #   Run #15（2026-09-22）就死在这里：前面的构建全绿、镜像也成功导出了，
+            #   直到启动容器的那一刻报错 ——
+            #     Bind for 0.0.0.0:5001 failed: port is already allocated
+            #   意思是宿主机的 5001 已经被别的东西占着（多半是上一次部署残留的
+            #   容器），新后端容器绑不上这个端口，compose 直接失败，整条流水线变红。
+            #   这类失败的特征是「构建看起来一切正常，却在启动瞬间挂掉」。
+            #
+            # 所以先用 down 把「本项目自己的」容器和网络收干净。两个好处：
+            #   1. 8080 / 5001 两个端口一定被释放，不会再撞车
+            #   2. --remove-orphans 顺手清掉改过 service 名之后遗留的孤儿容器
+            # 注意：down 会删掉容器，而测试库在容器内部、没有挂数据卷，
+            #       所以测试数据会清空 —— 这在《测试交接单》里已写明是预期行为。
+            docker compose -f docker-compose.test.yml down --remove-orphans || true
+
+            # down 之后端口还被占，说明占用者不是本项目的容器。
+            # ⚠️ 实测（2026-09-22）就是这么挂的：占着 5001 的是**另一个 compose
+            #   项目**的容器 —— 容器名 auth-system-backend-test-1，项目名 auth-system，
+            #   而本流水线的项目名是 auth-system-test（取自部署目录名）。
+            #   两个名字只差一点，光看容器名很容易看漏，所以这里把「项目名 + 工作目录」
+            #   两个标签一起打印出来，一眼就能看出它是从哪个目录起的。
+            # 这种情况不要盲目去 kill 别人的东西，只打印清楚，交给人判断。
+            PORT_BUSY=0
+            for p in 8080 5001; do
+              IDS=$(docker ps -q --filter "publish=$p" 2>/dev/null || true)
+              if [ -z "$IDS" ]; then
+                echo "  ✅ 端口 $p 已空闲"
+                continue
+              fi
+              PORT_BUSY=1
+              echo "  ❌ 端口 $p 仍被占用："
+              # 用 docker ps --format 直接读 compose 标签（比 docker inspect 稳：
+              # 遇到没有这些标签的普通容器也不会报错，只会留空）
+              docker ps --filter "publish=$p" \
+                --format '     {{.Names}}  项目={{.Label "com.docker.compose.project"}}  起于={{.Label "com.docker.compose.project.working_dir"}}' \
+                2>/dev/null || true
+            done
+            if [ "$PORT_BUSY" != "0" ]; then
+              echo ""
+              echo "❌ 有端口被「非本项目」的容器占用，已中止部署，避免误伤服务器上别的服务。"
+              echo "   上面的「项目 / 起于」标签就是排查线索：如果是另一个 compose 项目，"
+              echo "   说明服务器上还有一套别的部署在跑，要先把那套停掉，再重跑流水线。"
+              exit 1
+            fi
+
+            echo ""
+            echo "========== 4. 构建并启动测试环境 =========="
             # --build   重新构建镜像，保证跑的是最新代码
             # --wait    等所有服务的 healthcheck 都通过才返回
             #           （只用 -d 的话，命令返回时 nginx 可能还在跑 entrypoint
@@ -207,7 +266,7 @@ jobs:
             docker compose -f docker-compose.test.yml up -d --build --wait
 
             echo ""
-            echo "========== 4. 两个容器的就绪状态 =========="
+            echo "========== 5. 两个容器的就绪状态 =========="
             # --wait 已经等过了，这里只是把结果打出来留个记录
             for svc in backend-test front-test; do
               CID=$(docker compose -f docker-compose.test.yml ps -q "$svc")
@@ -216,7 +275,7 @@ jobs:
             done
 
             echo ""
-            echo "========== 5. 端到端验证（经 nginx 代理）=========="
+            echo "========== 6. 端到端验证（经 nginx 代理）=========="
             # 前面的 healthcheck 只证明「容器」活着；
             # 这里再从「前端 nginx」那一侧打一次，才能确认 nginx.conf 里的
             # /api/ 反代确实通 —— 也就是浏览器里走的真实路径。
@@ -253,12 +312,19 @@ jobs:
             echo "  ✅ 端到端验证通过：nginx 正常，/api/ 反代通到后端，鉴权生效"
 
             echo ""
-            echo "========== 6. 最终状态 =========="
+            echo "========== 7. 最终状态 =========="
             docker compose -f docker-compose.test.yml ps
 
             echo ""
-            echo "========== 7. 清理无用镜像，避免磁盘被撑满 =========="
-            docker image prune -f
+            echo "========== 8. 清理构建缓存与无用镜像，避免磁盘被撑满 =========="
+            # ⚠️ 只清 dangling 镜像是**不够**的。
+            #   真正会无限增长的是 BuildKit 的构建缓存：每一次 --build 都会留下新的层，
+            #   而 `docker image prune` 管不到缓存这一块，必须用 `builder prune`。
+            #   本项目在一天里就跑过十几次部署，缓存只涨不消，早晚把系统盘吃掉。
+            # --keep-storage 2GB：保留最近 2GB 缓存，兼顾磁盘安全和下次构建速度。
+            #   不要改成 -a / --all 全清 —— 那样下次部署要重新装 pip / npm 依赖，慢很多。
+            docker builder prune -f --keep-storage 2GB || echo "  构建缓存清理失败，跳过（不影响本次部署结果）"
+            docker image prune -f || true
 
             echo ""
             echo "🎉 测试环境部署完成"
