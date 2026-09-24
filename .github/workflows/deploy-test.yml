@@ -138,6 +138,31 @@ jobs:
             if [ -n "$EXISTING_DIR" ]; then
               CANDIDATE=$(git -C "$EXISTING_DIR" remote get-url origin 2>/dev/null || true)
               echo "  找到现有部署目录：$EXISTING_DIR"
+
+              # ⚠️ 护栏：检查生产目录停在哪个分支。这是实测踩出来的，后果有三重：
+              #   2026-09-22 实测发现 /home/ubuntu/auth-system 停在了 test 分支，于是：
+              #     1. 正式服务跑的是测试分支的代码（未经评审）
+              #     2. main 的流水线在那里执行 `git pull origin main` 时，因为当前分支
+              #        是 test，这句会变成「把 main 合并进 test」—— 而 test 本来就包含
+              #        main，所以直接输出 "Already up to date"，**看着绿、其实什么都没部署**
+              #     3. test 分支里有 docker-compose.test.yml，有人在那个目录里
+              #        `docker compose up` 就会起出第二套 compose 项目（项目名取自
+              #        目录名 auth-system），把 5001/8080 抢走 —— 于是本流水线报
+              #        "Bind for 0.0.0.0:5001 failed: port is already allocated"
+              #   这里只警告、不中止：测试环境该部署还是要部署，不能因为生产目录的问题
+              #   把测试流程也卡住。
+              PROD_BRANCH=$(git -C "$EXISTING_DIR" branch --show-current 2>/dev/null || echo "未知")
+              if [ "$PROD_BRANCH" = "test" ]; then
+                echo ""
+                echo "  ⚠️⚠️ 警告：生产目录 $EXISTING_DIR 当前停在 test 分支上！"
+                echo "      正式服务跑的是测试代码，且 main 的部署流水线会变成空跑。"
+                echo "      处理：cd $EXISTING_DIR && git checkout main && git pull origin main"
+                echo "           然后 sudo systemctl restart auth-backend，并重跑 main 的流水线"
+                echo ""
+              else
+                echo "  它的当前分支：$PROD_BRANCH"
+              fi
+
               if [ -n "$CANDIDATE" ]; then
                 # 只打印脱敏后的地址！URL 里可能内嵌令牌，绝不能原样打进 CI 日志
                 SAFE=$(echo "$CANDIDATE" | sed -E 's#//[^@/]*@#//***@#')
