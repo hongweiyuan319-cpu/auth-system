@@ -93,7 +93,19 @@ jobs:
               echo "  第 $i 次探首页：$FRONT_CODE"
               sleep 2
             done
-            API_CODE=$(curl -s -o /dev/null -m 10 -w "%{http_code}" http://127.0.0.1/api/user/profile || true)
+            # 后端必须单独轮询，不能只打一次。
+            # ⚠️ 2026-09-24 实测踩过这个坑：systemctl restart 返回时只代表「进程起来了」，
+            #    gunicorn 还要加载应用、绑定 127.0.0.1:5000，这中间 nginx 会返回 502。
+            #    当时紧接着只 curl 了一次、拿到 502，就把一次**完全成功**的部署
+            #    误判成了失败。所以这里把 502 / 000 都当成「还没就绪」，继续等，
+            #    直到看见 401 或超时。
+            API_CODE="000"
+            for i in $(seq 1 15); do
+              API_CODE=$(curl -s -o /dev/null -m 10 -w "%{http_code}" http://127.0.0.1/api/user/profile || true)
+              if [ "$API_CODE" = "401" ]; then break; fi
+              echo "  第 $i 次探 /api：$API_CODE（502/000 表示后端还没就绪）"
+              sleep 2
+            done
             echo "  生产首页            http://127.0.0.1/          -> $FRONT_CODE"
             echo "  经 nginx 调后端接口  http://127.0.0.1/api/...   -> $API_CODE"
 
