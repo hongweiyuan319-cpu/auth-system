@@ -19,9 +19,40 @@ jobs:
           script: |
             echo "🚀 成功连接服务器，开始拉取最新代码..."
             cd /home/ubuntu/auth-system
+
+            # ⚠️ set -e 是这段脚本最关键的一行，别删。
+            #   为什么：没有它的时候，脚本里任何一步失败都会继续往下跑，
+            #   只要最后一条命令成功，整个 job 就返回 0 ——
+            #   流水线显示绿色，但其实什么都没部署成功。
+            #   2026-09 就被这个坑了很久：生产目录被误切到 test 分支后，
+            #   下面那句 git pull origin main 变成了「把 main 合并进 test」，
+            #   输出 Already up to date、什么都没做，而流水线一直是绿的。
+            set -e
             
             # 放行合并并拉取最新代码 (假设你在服务器配好了 Git 权限)
             git pull origin main
+
+            # ---- 拉取后断言（两条），专门防「命令成功但没生效」 ----
+            # 为什么放在 pull 之后：这两种问题都是 pull 完了才看得出来的。
+            #   1) 分支不对 —— 生产目录被误切到 test 时，上面那句 pull 会变成
+            #      「把 main 合并进 test」，输出 Already up to date，什么都没部署。
+            #   2) 本地与远端不一致 —— 说明 pull 没有真正把代码同步过来。
+            BRANCH=$(git branch --show-current)
+            if [ "$BRANCH" != "main" ]; then
+              echo "❌ 生产目录当前在 $BRANCH 分支，应该在 main，已中止部署。"
+              echo "   修复：cd /home/ubuntu/auth-system && git checkout main && git pull origin main"
+              exit 1
+            fi
+            LOCAL_SHA=$(git rev-parse HEAD)
+            REMOTE_SHA=$(git rev-parse origin/main)
+            if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+              echo "❌ 拉取后本地与 origin/main 不一致，已中止部署"
+              echo "   本地：$LOCAL_SHA"
+              echo "   远端：$REMOTE_SHA"
+              exit 1
+            fi
+            echo "  当前分支：$BRANCH"
+            echo "  当前提交：$(git log --oneline -1)"
 
             echo "🌐 === 开始编译并更新前端 ==="
             cd front
@@ -35,5 +66,48 @@ jobs:
             source venv/bin/activate
             pip install -r requirements.txt
             sudo systemctl restart auth-backend
+
+            # 重启 ≠ 起来了。systemd 配的是 Restart=always，
+            # 应用起不来时它会默默地反复重试 —— 必须主动确认一次，
+            # 否则「部署成功但服务其实是挂的」又要等用户来报障。
+            for i in $(seq 1 10); do
+              if systemctl is-active --quiet auth-backend; then break; fi
+              echo "  第 $i 次检查 auth-backend：$(systemctl is-active auth-backend)"
+              sleep 2
+            done
+            if ! systemctl is-active --quiet auth-backend; then
+              echo "❌ auth-backend 没能正常启动，最近 30 行日志："
+              sudo journalctl -u auth-backend -n 30 --no-pager
+              exit 1
+            fi
+            echo "  auth-backend 状态：$(systemctl is-active auth-backend)"
+
+            echo ""
+            echo "🔍 === 端到端验证（经生产 nginx）==="
+            # 上面只证明「进程活着」；这里从 nginx 那一侧再打一次，
+            # 也就是浏览器里走的真实路径，才能确认整条链路是通的。
+            FRONT_CODE="000"
+            for i in $(seq 1 15); do
+              FRONT_CODE=$(curl -s -o /dev/null -m 5 -w "%{http_code}" http://127.0.0.1/ || true)
+              if [ "$FRONT_CODE" = "200" ]; then break; fi
+              echo "  第 $i 次探首页：$FRONT_CODE"
+              sleep 2
+            done
+            API_CODE=$(curl -s -o /dev/null -m 10 -w "%{http_code}" http://127.0.0.1/api/user/profile || true)
+            echo "  生产首页            http://127.0.0.1/          -> $FRONT_CODE"
+            echo "  经 nginx 调后端接口  http://127.0.0.1/api/...   -> $API_CODE"
+
+            if [ "$FRONT_CODE" != "200" ]; then
+              echo "❌ 生产首页没返回 200"
+              exit 1
+            fi
+            # 不带 token 访问受保护接口，预期就是 401。这一条同时证明两件事：
+            #   1. nginx 的 /api/ 反代确实通到了后端
+            #   2. JWT 鉴权在生效（没有因为配置错误变成放行 200）
+            if [ "$API_CODE" != "401" ]; then
+              echo "❌ 经 nginx 的接口返回 $API_CODE，预期 401"
+              exit 1
+            fi
+            echo "  ✅ 端到端验证通过"
 
             echo "🎉 恭喜！全栈自动部署完成！"
